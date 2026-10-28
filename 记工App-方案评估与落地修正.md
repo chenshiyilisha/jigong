@@ -931,6 +931,114 @@ Stream[1] (Analysis):   Dims: 1280 x 960     ← 4:3，改前是 1920 x 1440
 
 ---
 
+### 1.15：更多面板「拉不到底」，两次误诊之后改用打点测量
+
+用户报的现象只有六个字：**「拉不到底，有遮挡」**。截图能对上——最下面一行
+「对方连同一 WiFi，或者连你的热点」被屏幕下沿切断，往下怎么滑都不动。
+
+#### 一、先错了两回
+
+**第一回：以为是 insets 没传进来。** 面板当时是 `Dialog(usePlatformDefaultWidth = false)`，
+我以为 targetSdk 35 强制 edge-to-edge 之后 Dialog 也需要 `decorFitsSystemWindows = false`
+才会把 insets 分发下去，于是加上。顶部确实多出了间距，但**底部依旧被切、依旧滑不动**。
+
+**第二回：以为是窗口高度是 `WRAP_CONTENT`。** 按 StackOverflow 上的通行 workaround，
+在 `SideEffect` 里把 Dialog window 的 `setLayout(MATCH_PARENT, MATCH_PARENT)`。
+`dumpsys window` 确认窗口真的变成了 1260×2800 全屏——**然后还是滑不动**。
+
+两次都"改对了"却都没解决，说明我对病因的判断一直是猜的。
+
+#### 二、改成打点测量，一次问清
+
+不再猜，直接在面板里把三个数打出来（临时贴一行 `Text`，验完删）：
+
+```
+max=53  vp=2800  v=0  st=140 nav=0 ime=0
+```
+
+- `max = 53`：可滚动范围只有 53 像素。**这才叫"拉不到底"——不是滑不动，是本来就没多远可滑**；
+- `vp = 2800`：滚动视口按**整屏高度**算，没有扣掉任何系统栏；
+- `st = 140`：状态栏 inset 有值；
+- `nav = 0`：**导航条 inset 是 0**，所以底部内容一直画到屏幕最下沿，被手势条压住。
+
+三条凑起来正好解释全部症状：窗口被系统往下推了 140px 才能在状态栏下面显示，
+但 Compose 仍以为自己的高度是 2800 —— 于是视口比实际可见区**多算 140**，
+内容底部又**溢出 140**，一加一减，真正能滚的距离只剩 53。
+
+#### 三、修法：不用 Dialog，回到宿主里铺一层
+
+`Dialog` 有自己的 Window，`enableEdgeToEdge()` 只作用于 Activity 的 Window，
+两者的 insets 环境是两套。这条路上 insets 既然不可靠，就别在这条路上继续补。
+
+改成：**HomeScreen 外面包一层 `Box`，面板就是这层 `Box` 里的一个全屏 `Surface`**。
+insets 和首页同源，`statusBarsPadding()` / `navigationBarsPadding()` 立刻都对了。
+三处配套：
+
+- `BackHandler { onDismiss() }` —— 顶掉原来 Dialog 自带的返回键处理；
+- `Modifier.pointerInput(Unit) { detectTapGestures { } }` —— 吃掉点击，否则会穿透到底下的日历和主按钮；
+- 去掉 `Dialog` 相关的 `decorFitsSystemWindows` / `setLayout` 那两段补丁，一并删干净。
+
+修完实测：滚到底后最后一行完整可见，屏幕底边还剩 **91px**（手势条让位）没有被任何内容压住。
+
+#### 四、顺手把结构按规范重排了
+
+查资料时发现现有布局和 Material 3 对全屏对话框的要求是反的。原文：
+
+> Most dialog content should avoid scrolling. When scrolling is required,
+> **the dialog title is pinned at the top, with buttons pinned at the bottom.**
+
+而改之前：标题和「关闭」跟着内容一起滚——滑到一半标题被裁掉一半、「关闭」直接消失；
+主按钮「检查更新」被压在第三屏，要滑两次才按得到。对一个给老人用的面板，这三点都是硬伤。
+
+据适老化相关规范再补两条依据：
+
+- 工信部《移动互联网应用（APP）适老化通用设计规范》：主要文字 ≥ 18dp、对比度 ≥ 4.5:1、
+  适老版主要组件点击区 ≥ 60×60dp；
+- 适老化信息架构要求：**核心功能 2~3 步内完成**、**每一屏都要有明显的退出路径**。
+
+于是改成三段式：
+
+```
+┌─────────────────────────┐
+│ 更新与分享      关闭      │  ← 固定，永远在
+├─────────────────────────┤
+│ 分享这个月的工天           │  ↕ 只有这块滚
+│ 把安装包发给别人           │
+│ 从电脑或别的手机更新        │
+│ 让别的手机从我这更新        │
+├─────────────────────────┤
+│       检查更新           │  ← 固定，永远在
+└─────────────────────────┘
+```
+
+改动后：
+- 标题、版本号、「关闭」固定顶部，滚多远都在；
+- 主按钮固定底部，**任何时候一步就能按到**（原来要三步：进面板 → 滑两屏 → 点）；
+- 中间 `weight(1f) + verticalScroll` 只负责说明文字和地址输入。
+
+#### 五、验收（都在真机、R8 后的 release 包上）
+
+| 项 | 结果 |
+|---|---|
+| 正常字号滚动 | 标题/按钮不动，中间滚动；滚到底最后一行完整、底部留白 91px |
+| 200% 系统字号 | 标题、版本、关闭、底部按钮全部完整不裁（版本号会折成两行，可接受） |
+| 200% 下滚到底 | 最后一条「对方连同一 WiFi…」完整，底部按钮不遮内容 |
+| 返回键 | 关闭面板（`BackHandler` 生效） |
+| 点击穿透 | 点面板空白处不会触发底下的日历格子 |
+| lint | 0 error / 2 warning（与 1.14 相同，均为 ABI 与 mipmap 目录的既有提示） |
+
+**这轮最值得记的一条**：连续两次"按资料改对了却无效"之后，正确的动作不是再找一个
+更可能的猜测，而是**把可疑的中间量打印出来**。`max=53` 这个数字一出来，
+前面两轮的争论（insets 还是窗口高度）立刻都不重要了——因为它直接否掉了两种假设。
+
+参考资料：
+- [Material 3 · Dialogs](https://m3.material.io/components/dialogs/overview)（pinned title / pinned buttons）
+- [Material 3 · Dialog specs](https://m3.material.io/components/dialogs/specs)（全屏对话框 header 56dp、bottom action bar 56dp）
+- [工信部《移动互联网应用（APP）适老化通用设计规范》](http://wza.isc.org.cn/bztx/bzjd/mobile/index.html)
+- [Design Guidelines of Mobile Apps for Older Adults（JMIR 2023 系统综述）](https://mhealth.jmir.org/2023/1/e43186/)
+
+---
+
 ## 六、四个会静默出错的坑
 
 **1. `INTERNET` 权限是唯一的对外能力，要盯着它。**
