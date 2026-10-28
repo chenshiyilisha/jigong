@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose 负责全部样式，这里只提供窗口底色，避免启动时白闪/黑闪 -->
+    <style name="Theme.Jigong" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FFFFFF</item>
+    </style>
+
+    <!--
+      扫码页：整屏黑底。黑底不是审美选择 —— 取景画面还没出来时，白底会闪一下，
+      眼睛会以为相机坏了。
+
+      下面这两个 statusBarColor / navigationBarColor 只在 Android 12~14 上有效。
+      targetSdk 35 起（Android 15+）系统强制 edge-to-edge，官方《行为变更》写明
+      setStatusBarColor 与 R.attr#statusBarColor "已废弃，在 Android 15 上没有任何效果" ——
+      状态栏图标颜色改由系统按底下的内容亮度自动决定（这里是相机画面，会自动转白）。
+      所以「关闭」按钮不能靠这两个属性避让状态栏，它自己加了 statusBarsPadding()。
+    -->
+    <style name="Theme.Jigong.Scan" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#000000</item>
+        <item name="android:statusBarColor">#000000</item>
+        <item name="android:navigationBarColor">#000000</item>
+    </style>
+
+</resources>

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  备份范围：**不做云备份，只做换手机时的本机对拷**。
+
+  这个 app 的承诺是「工天只存在这台手机里」，云备份会把 SQLite 传到用户的云盘，
+  等于把这句话变成空话 —— 所以 cloud-backup 下面全部 exclude。
+
+  但 device-transfer 要留着：老人换手机的时候，用手机自带的「互传」把 app 带过去，
+  工天和日薪设置跟着走，整个过程在两台机器之间直连，不经过任何服务器。
+  （这跟"不上传"不冲突，是同一件事的两面。）
+
+  Android 12 起 allowBackup 只对云备份生效，真正管用的是这个文件。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="external" path="." />
+    </cloud-backup>
+
+    <device-transfer>
+        <!-- 工天就一个 jigong.db -->
+        <include domain="database" path="." />
+        <!-- 日薪、更新地址这几个偏好 -->
+        <include domain="sharedpref" path="." />
+    </device-transfer>
+</data-extraction-rules>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 分享图写在这里，通过 FileProvider 以 content:// 形式交给微信 -->
+    <cache-path name="share" path="share/" />
+    <!-- 下载下来的新版本 APK，同样要包成 content:// 才能交给系统安装器 -->
+    <cache-path name="update" path="update/" />
+    <!--
+      导出给别人的「本机安装包」。
+      必须有这一行，而且不能改成直接指向 /data/app/：FileProvider 只认这里声明过的根，
+      分享 /data/app/... 会抛 "Failed to find configured root"。
+    -->
+    <cache-path name="share_apk" path="share-apk/" />
+</paths>

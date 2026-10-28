@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      这两个权限是为了「局域网更新」加的，逐条说清楚它们能干什么、不能干什么：
+
+      INTERNET                  —— 发 HTTP 请求的能力。本 app 只有一处代码会用到它：
+                                   向你在更新页里填的那个局域网地址拉 version.json 和 APK。
+                                   工天数据永远只在 SQLite 里，没有任何一行代码往外发。
+      REQUEST_INSTALL_PACKAGES  —— 请求安装 APK 的能力。只用来装自己的新版本，
+                                   而且必须你先在系统设置里允许一次。
+
+      ⚠️ 代价：有了 INTERNET，这个 app 就不再是「物理上不可能联网」了。
+         这是换自动更新必须付的账，没有折中办法（蓝牙传文件也一样要权限，而且慢得多）。
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!--
+      ACCESS_NETWORK_STATE：普通权限，安装时自动授予，不会弹窗，也不会出现在权限列表里。
+      只用来读「当前连着哪个 WiFi 网卡」，好把「同一个 WiFi 用这个地址」和
+      「对方连我热点用那个地址」分开显示 —— 实测这台手机开热点后是 wlan2(192.168.43.x)，
+      原来的 wlan0(192.168.1.x) 还在。不区分的话会把对方用不上的那个当主地址显示。
+    -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!--
+      CAMERA：只为了「扫码填入对方地址」。这是整个 app 唯一一个让人警惕的权限，
+      所以只在用户主动点「扫码填入」时才请求；不点，永远不弹。
+      android:required="false" —— 没有摄像头的设备照样能装（还能手输地址）。
+    -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/Theme.Jigong">
+
+        <!--
+          ⚠️ 这三行是给 ML Kit 擦屁股的，删掉之前先看完。
+
+          ML Kit 会传递依赖 com.google.android.datatransport（Google 的通用遥测运行时）。
+          它不需要你写一行代码：靠合并进来的 Manifest 自己注册、开机自启，然后定时把
+          「用了哪些 API、崩溃了没」这类事件传去 firebaselogging.googleapis.com。
+
+          这个 app 对外的一句话是「零联网，工天只存在这台手机里」。工天数据确实一行都没出去，
+          但多一个会自己往外连的 SDK，这句话就不成立了（何况国产机没有 GMS，它连不上还会
+          反复重试、白耗电）。所以要按官方给的机制把管道拆掉：
+
+            · 删掉 TransportBackendDiscovery → 运行时找不到任何后端，事件无处可发
+            · 删掉两个调度器（JobScheduler / AlarmManager）→ 没有东西会定时唤醒去 flush
+
+          识别本身不依赖这条管道（模型是捆绑在 APK 里的），拆掉只是不再上报。
+          真机上验证过扫码正常之后，这三行要一直留着。
+
+          backup 规则同理：云备份关掉（工天不上传任何云），换手机时的「设备间迁移」保留
+          （互传时数据能跟着走，这是在本地发生的，不经过服务器）。
+        -->
+        <service
+            android:name="com.google.android.datatransport.runtime.backends.TransportBackendDiscovery"
+            tools:node="remove" />
+        <service
+            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService"
+            tools:node="remove" />
+        <receiver
+            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.AlarmManagerSchedulerBroadcastReceiver"
+            tools:node="remove" />
+        <!--
+          usesCleartextTraffic：局域网里那台电脑用的是 http 而不是 https（没有证书，
+          自签证书反而更麻烦）。targetSdk 28 起 http 默认被禁，所以这里必须显式打开。
+          代价是"允许明文"，但请求目标是 192.168.x.x，流量不出你家路由器。
+        -->
+
+        <!--
+          首页锁竖屏。两个理由：
+            1. 这个 app 的版式是「一屏看完全月 + 底部一颗大按钮」，横过来可用高只剩 300dp
+               出头，日历本身就要 400dp，怎么排都得滚动，收益是负的。
+            2. 老人拿着手机容易误转，转过去再转回来更麻烦。
+
+          不写 android:screenOrientation 的话，系统会把方向交给传感器，
+          这类误转就一定会发生。锁掉之后横屏这个分支从源头上不存在，
+          也就不需要为它做一整套横向布局。
+
+          （上一轮为此加的可滚动容器留着 —— 它解决的是另一个问题：
+            别人 360×640dp 的小屏手机、以及 1.3 倍以上字号，内容会高于一屏。）
+
+          screenSize / keyboardHidden 仍要声明：分屏、折叠屏展开、外接键盘都会变，
+          不声明就会重建 Activity，把用户正在看的月份丢掉。
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:screenOrientation="portrait"
+            android:exported="true"
+            android:configChanges="screenSize|keyboardHidden|smallestScreenSize"
+            android:windowSoftInputMode="adjustResize"
+            tools:ignore="LockedOrientationActivity,DiscouragedApi">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 显示已生成的分享图 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- 自己把自己更新完、进程被杀掉之后，把 app 重新拉起来，别让屏幕停在桌面 -->
+        <receiver
+            android:name=".update.RelaunchReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          扫码页：CameraX 取景 + ML Kit 识别，界面是 Compose 自己画的，所以没有 ActionBar。
+          锁竖屏是因为扫码这个动作用竖屏最顺手，横过来手指容易挡住镜头。
+          （之前用 zxing-android-embedded 时，这里还得靠一个空子类去盖掉它对 landscape 的写死；
+            换掉那个库之后这个坑就没了，锁竖屏纯粹是站着扫更方便。）
+        -->
+        <activity
+            android:name=".update.QrScanActivity"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.Jigong.Scan"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false"
+            tools:ignore="LockedOrientationActivity,DiscouragedApi" />
+    </application>
+
+</manifest>

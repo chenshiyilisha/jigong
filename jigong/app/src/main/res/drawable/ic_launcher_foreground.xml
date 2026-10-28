@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 图标主体：白色"工"字，两横一竖 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 上横 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,27 H74 V37 H34 Z" />
+
+    <!-- 中竖 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M50,27 H58 V81 H50 Z" />
+
+    <!-- 下横（比上横长，字才立得住） -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M29,71 H79 V81 H29 Z" />
+
+</vector>

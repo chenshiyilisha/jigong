@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <!-- 单色图层：系统「主题图标」取它的轮廓自己上色。
+         我们的前景本来就是纯白「工」字，直接复用；不写这段，Android 13 开主题图标后
+         这个 app 会显示成一块没有图案的色块。 -->
+    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>
