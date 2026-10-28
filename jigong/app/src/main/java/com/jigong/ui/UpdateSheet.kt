@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
+import androidx.activity.compose.BackHandler
 import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -11,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -53,14 +55,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import com.jigong.update.ApkInstaller
 import com.jigong.update.LanServer
@@ -336,13 +337,24 @@ fun UpdateSheet(
         else cameraPermLauncher.launch(Manifest.permission.CAMERA)
     }
 
-    // 用全屏对话框，而不是 ModalBottomSheet。
-    // 原因：sheet 自己的拖拽手势会把内部滚动抢走 —— 实测在 1.3 倍系统字号下内容溢出，
-    // 往上滑完全没有反应（内容被裁在屏幕外，谁也看不到）。Dialog 里普通的
-    // verticalScroll 是正常工作的。
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    // 直接铺在宿主 Compose 树的最上层，既不用 ModalBottomSheet，也不用 Dialog。
+    // 这两条都是踩出来的，记在这儿免得以后有人再改回去：
+    //
+    // 1. ModalBottomSheet 不行：它自己的拖拽手势会抢走内部滚动。1.3 倍系统字号下
+    //    内容一溢出，往上滑就完全没反应，内容被裁在屏幕外谁也看不到。
+    // 2. Dialog 也不行：Dialog 有自己的 Window，Activity 里调过的 enableEdgeToEdge()
+    //    不传给它。实测日志 max=53 viewport=2800 status=140 nav=0：
+    //    导航条 inset 是 0（底部内容压到屏幕最下沿），滚动视口按整屏 2800 算，
+    //    而窗口实际被系统下移了 140px、底部溢出 —— 可滚范围只剩 53px，
+    //    表现就是「拉不到底、底部被遮挡」。设 decorFitsSystemWindows=false、
+    //    setLayout(MATCH_PARENT) 都试过，insets 仍然是错的。
+    // 换成宿主里的全屏覆盖层后，insets 和首页同源，全部正常。
+    BackHandler { onDismiss() }
+    Box(
+        Modifier
+            .fillMaxSize()
+            // 吃掉点击，否则会穿透到底下的日历和主按钮
+            .pointerInput(Unit) { detectTapGestures { } }
     ) {
         Surface(Modifier.fillMaxSize(), color = Palette.sheetBg) {
             Column(
@@ -351,13 +363,16 @@ fun UpdateSheet(
                     .statusBarsPadding()
                     .navigationBarsPadding()
                     .imePadding()
-                    .verticalScroll(scroll)
-                    .padding(horizontal = 20.dp)
             ) {
+                // 固定头：标题和「关闭」不随内容滚走。
+                // Material 3 对全屏对话框的要求就是「标题钉在顶部、操作钉在底部」，
+                // 只有中间内容滚动。照这条改之前，标题会跟着滑出屏幕被裁掉一半，
+                // 「关闭」也一起消失 —— 老人滑到一半找不到出口。
+
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 10.dp),
+                        .padding(start = 20.dp, end = 8.dp, top = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f)) {
@@ -369,359 +384,378 @@ fun UpdateSheet(
                         Text("关闭", fontSize = 19.sp, fontWeight = FontWeight.Medium, color = Palette.accent)
                     }
                 }
+                HorizontalDivider(color = Palette.line, thickness = 1.dp)
 
-            // 顶栏那个「三横」上只有一个红点，不写清楚是什么事，老人会以为点坏了。
-            // 进面板第一眼就得看到原因。
-            if (newVersion != null) {
-                Spacer(Modifier.height(10.dp))
-                Box(
+                // 中间：说明、地址、开关，超出就滚
+                Column(
                     Modifier
-                        .fillMaxWidth()
-                        .background(Palette.accentSoft, RoundedCornerShape(12.dp))
-                        .padding(horizontal = 14.dp, vertical = 12.dp)
+                        .weight(1f)
+                        .verticalScroll(scroll)
+                        .padding(horizontal = 20.dp)
                 ) {
-                    Text(
-                        "有新版本 $newVersion（现在是 $myName）。往下点「自动查找」或「检查更新」就能装上。",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Palette.accent,
-                        lineHeight = 24.sp
-                    )
-                }
-            }
 
-            // ---------------------------------------------------------- 〇、分享这个月
-            Spacer(Modifier.height(18.dp))
+                    // 顶栏那个「三横」上只有一个红点，不写清楚是什么事，老人会以为点坏了。
+                    // 进面板第一眼就得看到原因。
+                    if (newVersion != null) {
+                        Spacer(Modifier.height(10.dp))
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .background(Palette.accentSoft, RoundedCornerShape(12.dp))
+                                .padding(horizontal = 14.dp, vertical = 12.dp)
+                        ) {
+                            Text(
+                                "有新版本 $newVersion（现在是 $myName）。往下点「自动查找」或「检查更新」就能装上。",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Palette.accent,
+                                lineHeight = 24.sp
+                            )
+                        }
+                    }
 
-            OutlinedButton(
-                onClick = onShareMonth,
-                enabled = monthDays > 0.0,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = Dimen.sheetButtonHeight),
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.5.dp, if (monthDays > 0.0) Palette.accent else Palette.line)
-            ) {
-                Text(
-                    "分享这个月的工天",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (monthDays > 0.0) Palette.accent else Palette.hint
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                if (monthDays > 0.0) {
-                    "$monthTitle 已记 ${fmtDays(monthDays)} 天，生成一张图，发微信里给老板看"
-                } else {
-                    "$monthTitle 还没有记录，所以没得分享"
-                },
-                fontSize = 14.sp,
-                color = Palette.inkSoft,
-                lineHeight = 20.sp
-            )
+                    // ---------------------------------------------------------- 〇、分享这个月
+                    Spacer(Modifier.height(18.dp))
 
-            Spacer(Modifier.height(14.dp))
-            HorizontalDivider(color = Palette.line, thickness = 1.dp)
-
-            // ---------------------------------------------------------- 一、把安装包发给别人
-            Spacer(Modifier.height(18.dp))
-
-            OutlinedButton(
-                onClick = { shareApk() },
-                enabled = !exporting,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = Dimen.sheetButtonHeight),
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.5.dp, Palette.accent)
-            ) {
-                Text(
-                    if (exporting) "正在准备…" else "把安装包发给别人",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Palette.accent
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "对方点开就能装。优先用手机自带的「互传」（vivo、小米、OPPO 都在这里）；" +
-                    "微信会把 .apk 改名成 .apk.1，要用「其他应用打开」才能装。",
-                fontSize = 14.sp,
-                color = Palette.inkSoft,
-                lineHeight = 20.sp
-            )
-
-            Spacer(Modifier.height(14.dp))
-            HorizontalDivider(color = Palette.line, thickness = 1.dp)
-            Spacer(Modifier.height(14.dp))
-
-            // ---------------------------------------------------------- 二、从别处更新（原有逻辑）
-            Text("从电脑或别的手机更新", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Palette.ink)
-            Spacer(Modifier.height(10.dp))
-
-            OutlinedTextField(
-                value = addr,
-                onValueChange = onAddrChange,
-                // 标签直接带格式说明：Compose 在输入框为空时会用标签占住 placeholder 的位置，
-                // 所以格式提示写在标签里才看得见
-                label = { Text("对方地址 IP:端口", fontSize = 15.sp) },
-                placeholder = { Text("192.168.1.10:8767", fontSize = 16.sp, color = Palette.hint) },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                textStyle = TextStyle(
-                    // 18sp 是量出来的：22sp 时 "192.168.1.20:8765" 会顶到框外面被裁掉
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Palette.ink
-                ),
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            // 两个入口并排放在输入框下面：老人手指粗，按钮横着排容易点错，
-            // 所以给足高度和间距，右对齐贴近"填完就按"的位置
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(onClick = { startScan() }) {
-                    Text(
-                        "扫码填入",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = Palette.accent
-                    )
-                }
-                Spacer(Modifier.width(8.dp))
-                TextButton(
-                    onClick = { search() },
-                    enabled = st !is Upd.Searching && st !is Upd.Downloading
-                ) {
-                    Text(
-                        if (st is Upd.Searching) "查找中…" else "自动查找",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = Palette.accent
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "自动查找会把电脑和别人的手机都找出来，用最新的那个",
-                fontSize = 14.sp,
-                color = Palette.inkSoft
-            )
-
-            Spacer(Modifier.height(14.dp))
-
-            when (val s = st) {
-                is Upd.New -> {
-                    Button(
-                        onClick = { downloadAndInstall(s.info) },
+                    OutlinedButton(
+                        onClick = onShareMonth,
+                        enabled = monthDays > 0.0,
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = Dimen.sheetButtonHeight),
                         shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Palette.accent)
+                        border = BorderStroke(1.5.dp, if (monthDays > 0.0) Palette.accent else Palette.line)
                     ) {
                         Text(
-                            "下载并安装 ${s.info.versionName}",
-                            fontSize = Dimen.sheetButton,
-                            fontWeight = FontWeight.Bold
+                            "分享这个月的工天",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (monthDays > 0.0) Palette.accent else Palette.hint
                         )
                     }
-                }
-
-                is Upd.Downloading -> {
-                    LinearProgressIndicator(
-                        progress = { s.pct / 100f },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(10.dp)
-                    )
                     Spacer(Modifier.height(8.dp))
-                    Text("正在传新版本… ${s.pct}%", fontSize = 16.sp, color = Palette.inkSoft)
-                }
+                    Text(
+                        if (monthDays > 0.0) {
+                            "$monthTitle 已记 ${fmtDays(monthDays)} 天，生成一张图，发微信里给老板看"
+                        } else {
+                            "$monthTitle 还没有记录，所以没得分享"
+                        },
+                        fontSize = 14.sp,
+                        color = Palette.inkSoft,
+                        lineHeight = 20.sp
+                    )
 
-                else -> {
-                    Button(
-                        onClick = { check(addr) },
-                        enabled = st !is Upd.Checking && st !is Upd.Searching,
+                    Spacer(Modifier.height(14.dp))
+                    HorizontalDivider(color = Palette.line, thickness = 1.dp)
+
+                    // ---------------------------------------------------------- 一、把安装包发给别人
+                    Spacer(Modifier.height(18.dp))
+
+                    OutlinedButton(
+                        onClick = { shareApk() },
+                        enabled = !exporting,
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = Dimen.sheetButtonHeight),
                         shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Palette.accent)
+                        border = BorderStroke(1.5.dp, Palette.accent)
                     ) {
                         Text(
-                            if (st is Upd.Checking) "正在检查…" else "检查更新",
-                            fontSize = Dimen.sheetButton,
-                            fontWeight = FontWeight.Bold
+                            if (exporting) "正在准备…" else "把安装包发给别人",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Palette.accent
                         )
                     }
-                }
-            }
-
-            Spacer(Modifier.height(10.dp))
-
-            val (msg, color) = when (val s = st) {
-                is Upd.Idle -> "" to Palette.inkSoft
-                is Upd.Checking -> "正在问有没有新版本…" to Palette.inkSoft
-                is Upd.Searching -> "正在局域网里找…" to Palette.inkSoft
-                is Upd.Latest -> "已经是最新版本" to Palette.inkSoft
-                is Upd.New -> "发现新版本 ${s.info.versionName}（${sizeText(s.info.size)}）" to Palette.accent
-                is Upd.Downloading -> "正在传新版本… ${s.pct}%" to Palette.accent
-                is Upd.Launched -> "已打开安装界面，点「安装」就好" to Palette.accent
-                is Upd.Failed -> s.msg to Palette.danger
-            }
-
-            if (msg.isNotEmpty()) {
-                Text(text = msg, fontSize = 16.sp, color = color, lineHeight = 24.sp)
-            }
-
-            if (st is Upd.Launched) {
-                Spacer(Modifier.height(6.dp))
-                Text("装完 app 会自己回来。工天数据不会动。", fontSize = 14.sp, color = Palette.inkSoft)
-            }
-
-            // ---------------------------------------------------------- 三、让别人从我这更新
-            Spacer(Modifier.height(18.dp))
-            HorizontalDivider(color = Palette.line, thickness = 1.dp)
-            Spacer(Modifier.height(16.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
+                    Spacer(Modifier.height(8.dp))
                     Text(
-                        "让别的手机从我这更新",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Palette.ink
+                        "对方点开就能装。优先用手机自带的「互传」（vivo、小米、OPPO 都在这里）；" +
+                            "微信会把 .apk 改名成 .apk.1，要用「其他应用打开」才能装。",
+                        fontSize = 14.sp,
+                        color = Palette.inkSoft,
+                        lineHeight = 20.sp
                     )
+
+                    Spacer(Modifier.height(14.dp))
+                    HorizontalDivider(color = Palette.line, thickness = 1.dp)
+                    Spacer(Modifier.height(14.dp))
+
+                    // ---------------------------------------------------------- 二、从别处更新（原有逻辑）
+                    Text("从电脑或别的手机更新", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Palette.ink)
+                    Spacer(Modifier.height(10.dp))
+
+                    OutlinedTextField(
+                        value = addr,
+                        onValueChange = onAddrChange,
+                        // 标签直接带格式说明：Compose 在输入框为空时会用标签占住 placeholder 的位置，
+                        // 所以格式提示写在标签里才看得见
+                        label = { Text("对方地址 IP:端口", fontSize = 15.sp) },
+                        placeholder = { Text("192.168.1.10:8767", fontSize = 16.sp, color = Palette.hint) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        textStyle = TextStyle(
+                            // 18sp 是量出来的：22sp 时 "192.168.1.20:8765" 会顶到框外面被裁掉
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Palette.ink
+                        ),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    // 两个入口并排放在输入框下面：老人手指粗，按钮横着排容易点错，
+                    // 所以给足高度和间距，右对齐贴近"填完就按"的位置
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = { startScan() }) {
+                            Text(
+                                "扫码填入",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Palette.accent
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(
+                            onClick = { search() },
+                            enabled = st !is Upd.Searching && st !is Upd.Downloading
+                        ) {
+                            Text(
+                                if (st is Upd.Searching) "查找中…" else "自动查找",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Palette.accent
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(6.dp))
                     Text(
-                        "对方连同一 WiFi，或者连你的热点",
+                        "自动查找会把电脑和别人的手机都找出来，用最新的那个",
                         fontSize = 14.sp,
                         color = Palette.inkSoft
                     )
-                }
-                Switch(
-                    checked = serving,
-                    onCheckedChange = { toggleServe(it) },
-                    enabled = !starting
-                )
-            }
 
-            if (serving && serveIps.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .background(Palette.accentSoft, RoundedCornerShape(12.dp))
-                        .padding(horizontal = 14.dp, vertical = 12.dp)
-                ) {
-                    Text("在对方手机上填这个地址", fontSize = 14.sp, color = Palette.inkSoft)
+                    Spacer(Modifier.height(14.dp))
 
-                    // 必须分用法写清楚。实测开热点后这台手机有三个地址：
-                    //   wlan0 192.168.1.10（连的上游路由器，PC 在同一网段时用这个）
-                    //   wlan1 192.168.1.11（双 WiFi 加速，和 wlan0 是同一台路由器，不算热点）
-                    //   wlan2 192.168.43.x（热点，对方连你热点时只能用这个）
-                    // 网段不同的两个地址互不相通，给错了对方就一直转圈。
-                    val primary = serveIps.firstOrNull()
-                    val hotspotAddr = serveIps.firstOrNull { it.role == LanServer.Role.HOTSPOT }
-                    val otherAddrs = serveIps.drop(1).filter { it.role == LanServer.Role.OTHER }
-                    val multi = serveIps.size > 1
 
-                    if (primary != null) {
-                        if (multi) {
+                    // ---------------------------------------------------------- 三、让别人从我这更新
+                    Spacer(Modifier.height(18.dp))
+                    HorizontalDivider(color = Palette.line, thickness = 1.dp)
+                    Spacer(Modifier.height(16.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
                             Text(
-                                when (primary.role) {
-                                    LanServer.Role.WIFI -> "同一个 WiFi 用这个"
-                                    LanServer.Role.HOTSPOT -> "对方连你热点时用这个"
-                                    LanServer.Role.OTHER -> "本机地址"
-                                },
-                                fontSize = 13.sp,
+                                "让别的手机从我这更新",
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Palette.ink
+                            )
+                            Text(
+                                "对方连同一 WiFi，或者连你的热点",
+                                fontSize = 14.sp,
                                 color = Palette.inkSoft
                             )
                         }
-                        Text(
-                            "${primary.ip}:${LanServer.PORT}",
-                            fontSize = if (multi) 23.sp else 26.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Palette.accent
+                        Switch(
+                            checked = serving,
+                            onCheckedChange = { toggleServe(it) },
+                            enabled = !starting
                         )
                     }
-                    // 真正的热点地址（和上面不是同一个网段时才单列，否则会让人以为要二选一）
-                    if (hotspotAddr != null && hotspotAddr.ip != primary?.ip) {
-                        Text("对方连你热点时用这个", fontSize = 13.sp, color = Palette.inkSoft)
-                        Text(
-                            "${hotspotAddr.ip}:${LanServer.PORT}",
-                            fontSize = 23.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Palette.accent
-                        )
+
+                    if (serving && serveIps.isNotEmpty()) {
+                        Spacer(Modifier.height(12.dp))
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .background(Palette.accentSoft, RoundedCornerShape(12.dp))
+                                .padding(horizontal = 14.dp, vertical = 12.dp)
+                        ) {
+                            Text("在对方手机上填这个地址", fontSize = 14.sp, color = Palette.inkSoft)
+
+                            // 必须分用法写清楚。实测开热点后这台手机有三个地址：
+                            //   wlan0 192.168.1.10（连的上游路由器，PC 在同一网段时用这个）
+                            //   wlan1 192.168.1.11（双 WiFi 加速，和 wlan0 是同一台路由器，不算热点）
+                            //   wlan2 192.168.43.x（热点，对方连你热点时只能用这个）
+                            // 网段不同的两个地址互不相通，给错了对方就一直转圈。
+                            val primary = serveIps.firstOrNull()
+                            val hotspotAddr = serveIps.firstOrNull { it.role == LanServer.Role.HOTSPOT }
+                            val otherAddrs = serveIps.drop(1).filter { it.role == LanServer.Role.OTHER }
+                            val multi = serveIps.size > 1
+
+                            if (primary != null) {
+                                if (multi) {
+                                    Text(
+                                        when (primary.role) {
+                                            LanServer.Role.WIFI -> "同一个 WiFi 用这个"
+                                            LanServer.Role.HOTSPOT -> "对方连你热点时用这个"
+                                            LanServer.Role.OTHER -> "本机地址"
+                                        },
+                                        fontSize = 13.sp,
+                                        color = Palette.inkSoft
+                                    )
+                                }
+                                Text(
+                                    "${primary.ip}:${LanServer.PORT}",
+                                    fontSize = if (multi) 23.sp else 26.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Palette.accent
+                                )
+                            }
+                            // 真正的热点地址（和上面不是同一个网段时才单列，否则会让人以为要二选一）
+                            if (hotspotAddr != null && hotspotAddr.ip != primary?.ip) {
+                                Text("对方连你热点时用这个", fontSize = 13.sp, color = Palette.inkSoft)
+                                Text(
+                                    "${hotspotAddr.ip}:${LanServer.PORT}",
+                                    fontSize = 23.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Palette.accent
+                                )
+                            }
+                            // 双 WiFi 加速的第二条链路之类：能用但没必要强调
+                            if (otherAddrs.isNotEmpty()) {
+                                Text(
+                                    "连不上再试：" + otherAddrs.joinToString("  ") { "${it.ip}:${LanServer.PORT}" },
+                                    fontSize = 13.sp,
+                                    color = Palette.inkSoft
+                                )
+                            }
+                            Spacer(Modifier.height(10.dp))
+
+                            val bmp = qrBmp
+                            if (bmp != null) {
+                                Image(
+                                    bitmap = bmp.asImageBitmap(),
+                                    contentDescription = "地址二维码",
+                                    modifier = Modifier
+                                        .size(150.dp)
+                                        .align(Alignment.CenterHorizontally)
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    "对方在「记工」里点「扫码填入」扫上面这个码，地址就自动填好了；也可以点「自动查找」。\n" +
+                                        "传的时候这一页要开着。",
+                                    fontSize = 14.sp,
+                                    color = Palette.inkSoft,
+                                    lineHeight = 20.sp
+                                )
+                            } else {
+                                Text(
+                                    "或者对方点「自动查找」也能找到我。\n传的时候这一页要开着。",
+                                    fontSize = 14.sp,
+                                    color = Palette.inkSoft,
+                                    lineHeight = 20.sp
+                                )
+                            }
+                            if (servedCount > 0) {
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    "已经发出去 $servedCount 份",
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Palette.accent
+                                )
+                            }
+                        }
                     }
-                    // 双 WiFi 加速的第二条链路之类：能用但没必要强调
-                    if (otherAddrs.isNotEmpty()) {
-                        Text(
-                            "连不上再试：" + otherAddrs.joinToString("  ") { "${it.ip}:${LanServer.PORT}" },
-                            fontSize = 13.sp,
-                            color = Palette.inkSoft
-                        )
+
+                    if (starting) {
+                        Spacer(Modifier.height(10.dp))
+                        Text("正在准备安装包…", fontSize = 15.sp, color = Palette.inkSoft)
                     }
+
+                    serveMsg?.let {
+                        Spacer(Modifier.height(10.dp))
+                        Text(it, fontSize = 15.sp, color = Palette.danger, lineHeight = 22.sp)
+                    }
+
+                        Spacer(Modifier.height(26.dp))
+                }
+
+                // 固定底：主操作永远在屏上，不用先滑到中间去找
+                HorizontalDivider(color = Palette.line, thickness = 1.dp)
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 10.dp)
+                ) {
+                    when (val s = st) {
+                        is Upd.New -> {
+                            Button(
+                                onClick = { downloadAndInstall(s.info) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = Dimen.sheetButtonHeight),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Palette.accent)
+                            ) {
+                                Text(
+                                    "下载并安装 ${s.info.versionName}",
+                                    fontSize = Dimen.sheetButton,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        is Upd.Downloading -> {
+                            LinearProgressIndicator(
+                                progress = { s.pct / 100f },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(10.dp)
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text("正在传新版本… ${s.pct}%", fontSize = 16.sp, color = Palette.inkSoft)
+                        }
+
+                        else -> {
+                            Button(
+                                onClick = { check(addr) },
+                                enabled = st !is Upd.Checking && st !is Upd.Searching,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = Dimen.sheetButtonHeight),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Palette.accent)
+                            ) {
+                                Text(
+                                    if (st is Upd.Checking) "正在检查…" else "检查更新",
+                                    fontSize = Dimen.sheetButton,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
                     Spacer(Modifier.height(10.dp))
 
-                    val bmp = qrBmp
-                    if (bmp != null) {
-                        Image(
-                            bitmap = bmp.asImageBitmap(),
-                            contentDescription = "地址二维码",
-                            modifier = Modifier
-                                .size(150.dp)
-                                .align(Alignment.CenterHorizontally)
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "对方在「记工」里点「扫码填入」扫上面这个码，地址就自动填好了；也可以点「自动查找」。\n" +
-                                "传的时候这一页要开着。",
-                            fontSize = 14.sp,
-                            color = Palette.inkSoft,
-                            lineHeight = 20.sp
-                        )
-                    } else {
-                        Text(
-                            "或者对方点「自动查找」也能找到我。\n传的时候这一页要开着。",
-                            fontSize = 14.sp,
-                            color = Palette.inkSoft,
-                            lineHeight = 20.sp
-                        )
+                    val (msg, color) = when (val s = st) {
+                        is Upd.Idle -> "" to Palette.inkSoft
+                        is Upd.Checking -> "正在问有没有新版本…" to Palette.inkSoft
+                        is Upd.Searching -> "正在局域网里找…" to Palette.inkSoft
+                        is Upd.Latest -> "已经是最新版本" to Palette.inkSoft
+                        is Upd.New -> "发现新版本 ${s.info.versionName}（${sizeText(s.info.size)}）" to Palette.accent
+                        is Upd.Downloading -> "正在传新版本… ${s.pct}%" to Palette.accent
+                        is Upd.Launched -> "已打开安装界面，点「安装」就好" to Palette.accent
+                        is Upd.Failed -> s.msg to Palette.danger
                     }
-                    if (servedCount > 0) {
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "已经发出去 $servedCount 份",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Palette.accent
-                        )
+
+                    if (msg.isNotEmpty()) {
+                        Text(text = msg, fontSize = 16.sp, color = color, lineHeight = 24.sp)
+                    }
+
+                    if (st is Upd.Launched) {
+                        Spacer(Modifier.height(6.dp))
+                        Text("装完 app 会自己回来。工天数据不会动。", fontSize = 14.sp, color = Palette.inkSoft)
                     }
                 }
-            }
-
-            if (starting) {
-                Spacer(Modifier.height(10.dp))
-                Text("正在准备安装包…", fontSize = 15.sp, color = Palette.inkSoft)
-            }
-
-            serveMsg?.let {
-                Spacer(Modifier.height(10.dp))
-                Text(it, fontSize = 15.sp, color = Palette.danger, lineHeight = 22.sp)
-            }
-
-                Spacer(Modifier.height(26.dp))
             }
         }
     }

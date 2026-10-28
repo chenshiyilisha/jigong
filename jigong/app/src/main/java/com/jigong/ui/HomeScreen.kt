@@ -264,194 +264,196 @@ fun HomeScreen(repo: WorkRepo) {
 
     val monthDays = records.values.sum()
 
-    Scaffold(
-        snackbarHost = {
-            // 往上抬，别把"今天记一天"这颗主按钮挡住
-            SnackbarHost(hostState = snackbar, modifier = Modifier.padding(bottom = 92.dp))
-        },
-        containerColor = Palette.bg
-    ) { pad ->
-        /*
-         * 整页放进可滚动容器。
-         *
-         * 原来是 `Column(fillMaxSize)` + `Spacer(weight(1f))`：内容装不下时 weight 会被
-         * 压成 0，但**后面的子项照样往下排**，超出屏幕的部分直接被裁掉，而且没有任何
-         * 滚动可以救。会撞上的是这两种情况：
-         *
-         *   · 别人家的小屏手机。360×640dp 的机器在 1.0 字号下就已经装不下，而底部那颗
-         *     「今天记一天」正好是被裁掉的那一块。这个 app 是要发给工友用的，
-         *     不能只在 800dp 高的大屏上成立。
-         *   · 系统字号放大到 1.3 倍以上（老人手机几乎都会调大），内容同样超出。
-         *
-         * 横屏已经不算了 —— MainActivity 在清单里锁了竖屏，那个场景从源头不存在。
-         *
-         * 官方《自适应布局》的要求是：内容可能高于视口时必须可滚动，而不是靠固定尺寸
-         * 「大部分机器够用」。这里用 BoxWithConstraints 拿视口高度，再 heightIn(min=视口)：
-         *   · 内容比视口矮 → 列被撑到视口高，SpaceBetween 把「合计 + 主按钮」顶到底部，
-         *     观感和原来一模一样（不是改成顶部堆叠）；
-         *   · 内容比视口高 → 列高 = 内容高，整页可滚，主按钮滑一下就能看到。
-         */
-        BoxWithConstraints(
-            Modifier
-                .fillMaxSize()
-                .padding(pad)
-                .padding(horizontal = Dimen.pagePadding)
-        ) {
-            val viewport = maxHeight
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .heightIn(min = viewport),
-                verticalArrangement = Arrangement.SpaceBetween
+    Box(Modifier.fillMaxSize()) {
+        Scaffold(
+            snackbarHost = {
+                // 往上抬，别把"今天记一天"这颗主按钮挡住
+                SnackbarHost(hostState = snackbar, modifier = Modifier.padding(bottom = 92.dp))
+            },
+            containerColor = Palette.bg
+        ) { pad ->
+            /*
+             * 整页放进可滚动容器。
+             *
+             * 原来是 `Column(fillMaxSize)` + `Spacer(weight(1f))`：内容装不下时 weight 会被
+             * 压成 0，但**后面的子项照样往下排**，超出屏幕的部分直接被裁掉，而且没有任何
+             * 滚动可以救。会撞上的是这两种情况：
+             *
+             *   · 别人家的小屏手机。360×640dp 的机器在 1.0 字号下就已经装不下，而底部那颗
+             *     「今天记一天」正好是被裁掉的那一块。这个 app 是要发给工友用的，
+             *     不能只在 800dp 高的大屏上成立。
+             *   · 系统字号放大到 1.3 倍以上（老人手机几乎都会调大），内容同样超出。
+             *
+             * 横屏已经不算了 —— MainActivity 在清单里锁了竖屏，那个场景从源头不存在。
+             *
+             * 官方《自适应布局》的要求是：内容可能高于视口时必须可滚动，而不是靠固定尺寸
+             * 「大部分机器够用」。这里用 BoxWithConstraints 拿视口高度，再 heightIn(min=视口)：
+             *   · 内容比视口矮 → 列被撑到视口高，SpaceBetween 把「合计 + 主按钮」顶到底部，
+             *     观感和原来一模一样（不是改成顶部堆叠）；
+             *   · 内容比视口高 → 列高 = 内容高，整页可滚，主按钮滑一下就能看到。
+             */
+            BoxWithConstraints(
+                Modifier
+                    .fillMaxSize()
+                    .padding(pad)
+                    .padding(horizontal = Dimen.pagePadding)
             ) {
-                Column(Modifier.fillMaxWidth()) {
-                    MonthHeader(
-                        ym = ym,
-                        newVersion = newVer?.versionName,
-                        onPrev = { ym = ym.minusMonths(1) },
-                        onNext = { ym = ym.plusMonths(1) },
-                        onUpdate = { showUpdate = true }
-                    )
+                val viewport = maxHeight
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .heightIn(min = viewport),
+                    verticalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(Modifier.fillMaxWidth()) {
+                        MonthHeader(
+                            ym = ym,
+                            newVersion = newVer?.versionName,
+                            onPrev = { ym = ym.minusMonths(1) },
+                            onNext = { ym = ym.plusMonths(1) },
+                            onUpdate = { showUpdate = true }
+                        )
 
-                    WeekHead()
+                        WeekHead()
 
-                    CalendarGrid(
-                        ym = ym,
-                        today = today,
-                        records = records,
-                        // 格子里的日期一定属于当前显示这个月，所以 records[它] 就是准确值
-                        onPick = { d -> editing = Editing(d, records[d]) }
-                    )
+                        CalendarGrid(
+                            ym = ym,
+                            today = today,
+                            records = records,
+                            // 格子里的日期一定属于当前显示这个月，所以 records[它] 就是准确值
+                            onPick = { d -> editing = Editing(d, records[d]) }
+                        )
 
-                    Text(
-                        text = "点日期可以补记或修改",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 6.dp),
-                        textAlign = TextAlign.Center,
-                        fontSize = 15.sp,
-                        color = Palette.inkSoft
-                    )
-                }
-
-                Column(Modifier.fillMaxWidth()) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                text = "本月 ${fmtDays(monthDays)} 天",
-                                fontSize = Dimen.bigNumber,
-                                fontWeight = FontWeight.Bold,
-                                color = Palette.ink
-                            )
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                // 必须跟着「显示的那个年份」写。原来固定写「今年」，
-                                // 用户翻到 2025 年时数字是 2025 全年，标签却还是「今年」，
-                                // 两句话互相矛盾 —— 老人看到会以为数字错了。
-                                text = if (ym.year == today.year) {
-                                    "今年 ${fmtDays(yearDays)} 天"
-                                } else {
-                                    "${ym.year} 年 ${fmtDays(yearDays)} 天"
-                                },
-                                fontSize = Dimen.body,
-                                color = Palette.inkSoft
-                            )
-                        }
-                        TextButton(
-                            onClick = { showCalc = true },
-                            modifier = Modifier.height(56.dp)
-                        ) {
-                            Text("算账", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Palette.accent)
-                        }
+                        Text(
+                            text = "点日期可以补记或修改",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp),
+                            textAlign = TextAlign.Center,
+                            fontSize = 15.sp,
+                            color = Palette.inkSoft
+                        )
                     }
 
-                    Spacer(Modifier.height(12.dp))
-
-                    TodayButton(
-                        amount = todayAmount,
-                        onClick = {
-                            // 工天用 todayAmount，不是 records[today] —— 用户可能正翻在别的月份
-                            val cur = todayAmount
-                            if (cur == null) apply(today, 1.0) else editing = Editing(today, cur)
+                    Column(Modifier.fillMaxWidth()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    text = "本月 ${fmtDays(monthDays)} 天",
+                                    fontSize = Dimen.bigNumber,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Palette.ink
+                                )
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    // 必须跟着「显示的那个年份」写。原来固定写「今年」，
+                                    // 用户翻到 2025 年时数字是 2025 全年，标签却还是「今年」，
+                                    // 两句话互相矛盾 —— 老人看到会以为数字错了。
+                                    text = if (ym.year == today.year) {
+                                        "今年 ${fmtDays(yearDays)} 天"
+                                    } else {
+                                        "${ym.year} 年 ${fmtDays(yearDays)} 天"
+                                    },
+                                    fontSize = Dimen.body,
+                                    color = Palette.inkSoft
+                                )
+                            }
+                            TextButton(
+                                onClick = { showCalc = true },
+                                modifier = Modifier.height(56.dp)
+                            ) {
+                                Text("算账", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Palette.accent)
+                            }
                         }
-                    )
 
-                    Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.height(12.dp))
+
+                        TodayButton(
+                            amount = todayAmount,
+                            onClick = {
+                                // 工天用 todayAmount，不是 records[today] —— 用户可能正翻在别的月份
+                                val cur = todayAmount
+                                if (cur == null) apply(today, 1.0) else editing = Editing(today, cur)
+                            }
+                        )
+
+                        Spacer(Modifier.height(16.dp))
+                    }
                 }
             }
         }
-    }
 
-    editing?.let { e ->
-        DaySheet(
-            date = e.date,
-            amount = e.amount,
-            onPick = { a -> apply(e.date, a); editing = null },
-            onClear = { apply(e.date, null); editing = null },
-            onDismiss = { editing = null }
-        )
-    }
-
-    if (showCalc) {
-        // 原来是 remember(calcFrom, calcTo) { repo.rangeTotal(...) } —— 在**组合期**查数据库。
-        // 能跑，但组合函数应该是纯的：I/O 放进来，一旦哪天卡片重组的时机变了就是一次主线程
-        // 卡顿，而且异常会直接把界面炸掉。改成副作用里查。
-        var calcDays by remember { mutableStateOf<Double?>(null) }
-        LaunchedEffect(calcFrom, calcTo) {
-            calcDays = withContext(Dispatchers.IO) { repo.rangeTotal(calcFrom, calcTo) }
+        editing?.let { e ->
+            DaySheet(
+                date = e.date,
+                amount = e.amount,
+                onPick = { a -> apply(e.date, a); editing = null },
+                onClear = { apply(e.date, null); editing = null },
+                onDismiss = { editing = null }
+            )
         }
-        CalcSheet(
-            from = calcFrom,
-            to = calcTo,
-            days = calcDays,
-            rate = rate,
-            onRateChange = { s ->
-                if (s.count { it == '.' } <= 1 && s.all { it.isDigit() || it == '.' }) {
-                    rate = s
-                    prefs.edit().putString("rate", s).apply()
-                }
-            },
-            onPickFrom = {
-                pickDate(ctx, calcFrom) { picked ->
-                    calcFrom = picked
-                    if (calcTo.isBefore(picked)) calcTo = picked
-                }
-            },
-            onPickTo = {
-                pickDate(ctx, calcTo) { picked ->
-                    calcTo = picked
-                    if (calcFrom.isAfter(picked)) calcFrom = picked
-                }
-            },
-            onDismiss = { showCalc = false }
-        )
-    }
 
-    if (showUpdate) {
-        UpdateSheet(
-            addr = updateAddr,
-            onAddrChange = {
-                updateAddr = it
-                prefs.edit().putString("update_addr", it.trim()).apply()
-            },
-            onDismiss = { showUpdate = false },
-            monthTitle = "${ym.year} 年 ${ym.monthValue} 月",
-            monthDays = monthDays,
-            onShareMonth = {
-                // 先把面板关掉再去调系统分享：分享面板会盖在 Dialog 上面，
-                // 回来的时候留着一个半透明遮罩很怪
-                showUpdate = false
-                // 画图 + 压 PNG 在 IO 线程（1080×1080 位图，别卡主线程）
-                scope.launch {
-                    runCatching { ShareImage.share(ctx, ym, monthDays) }
-                        .onFailure {
-                            Toast.makeText(ctx, "生成分享图失败：${it.message}", Toast.LENGTH_LONG).show()
-                        }
-                }
-            },
-            newVersion = newVer?.versionName
-        )
+        if (showCalc) {
+            // 原来是 remember(calcFrom, calcTo) { repo.rangeTotal(...) } —— 在**组合期**查数据库。
+            // 能跑，但组合函数应该是纯的：I/O 放进来，一旦哪天卡片重组的时机变了就是一次主线程
+            // 卡顿，而且异常会直接把界面炸掉。改成副作用里查。
+            var calcDays by remember { mutableStateOf<Double?>(null) }
+            LaunchedEffect(calcFrom, calcTo) {
+                calcDays = withContext(Dispatchers.IO) { repo.rangeTotal(calcFrom, calcTo) }
+            }
+            CalcSheet(
+                from = calcFrom,
+                to = calcTo,
+                days = calcDays,
+                rate = rate,
+                onRateChange = { s ->
+                    if (s.count { it == '.' } <= 1 && s.all { it.isDigit() || it == '.' }) {
+                        rate = s
+                        prefs.edit().putString("rate", s).apply()
+                    }
+                },
+                onPickFrom = {
+                    pickDate(ctx, calcFrom) { picked ->
+                        calcFrom = picked
+                        if (calcTo.isBefore(picked)) calcTo = picked
+                    }
+                },
+                onPickTo = {
+                    pickDate(ctx, calcTo) { picked ->
+                        calcTo = picked
+                        if (calcFrom.isAfter(picked)) calcFrom = picked
+                    }
+                },
+                onDismiss = { showCalc = false }
+            )
+        }
+
+        if (showUpdate) {
+            UpdateSheet(
+                addr = updateAddr,
+                onAddrChange = {
+                    updateAddr = it
+                    prefs.edit().putString("update_addr", it.trim()).apply()
+                },
+                onDismiss = { showUpdate = false },
+                monthTitle = "${ym.year} 年 ${ym.monthValue} 月",
+                monthDays = monthDays,
+                onShareMonth = {
+                    // 先把面板关掉再去调系统分享：分享面板会盖在 Dialog 上面，
+                    // 回来的时候留着一个半透明遮罩很怪
+                    showUpdate = false
+                    // 画图 + 压 PNG 在 IO 线程（1080×1080 位图，别卡主线程）
+                    scope.launch {
+                        runCatching { ShareImage.share(ctx, ym, monthDays) }
+                            .onFailure {
+                                Toast.makeText(ctx, "生成分享图失败：${it.message}", Toast.LENGTH_LONG).show()
+                            }
+                    }
+                },
+                newVersion = newVer?.versionName
+            )
+        }
     }
 }
 
