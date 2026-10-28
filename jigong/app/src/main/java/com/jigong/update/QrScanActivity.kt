@@ -13,6 +13,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -237,26 +238,42 @@ class QrScanActivity : ComponentActivity() {
                      * 分析分辨率必须显式指定。
                      *
                      * CameraX 官方文档《Configuration options》写明 ImageAnalysis 的
-                     * **默认目标是 640x480** —— 对扫码来说偏小：屏幕上的二维码本身不大，
-                     * 640 宽的一帧里码点只有几个像素，稍微远一点或手一抖就解不出来。
+                     * **默认目标是 640x480** —— 对扫码偏小：屏幕上的二维码本来就不大，
+                     * 640 宽的一帧里码点只有几个像素，稍远一点或手一抖就解不出来。
                      *
-                     * 1280x720（720p）是社区反复验证过的甜点：ML Kit 在 720p 上的
-                     * 识别准确率和大图差别很小，单帧耗时却从百毫秒级降到 20~50ms，
-                     * 而 1080p 只会让延迟变大、更容易发热。
+                     * 目标定在 1280x960（4:3，123 万像素）。理由：
+                     *   · ML Kit 在 720p 上下识别率就与大图几乎无差，收益在「单帧耗时从
+                     *     百毫秒级降到几十毫秒」；再往上只是变慢、更容易发热，老人机更吃亏。
+                     *   · 宽高比选 4:3 是为了跟 Preview 对齐（本机预览是 1632x1224）。
                      *
-                     * 尺寸的写法按官方说明：要表达成「按目标旋转量旋转之后的坐标系」。
-                     * 这个页面锁竖屏、手机自然方向也是竖屏，所以写成 720 宽 x 1280 高；
-                     * 写成 1280x720 会被解析成一张横向的图。
+                     * ⚠️ 这里踩过一个坑，记下来免得再犯：
+                     * 原来写的是 `Size(720, 1280)`（9:16 竖着写），以为旋转后就等于 720p，
+                     * 结果**实测分析流是 1920x1440**，比预期大了 3 倍。
+                     * 原因有两条，官方文档里都写了但很容易漏读：
+                     *   1. `AspectRatioStrategy` 的**排序优先级高于** `ResolutionStrategy`
+                     *      （"the aspect ratio strategy takes precedence over the resolution
+                     *      strategy when sorting candidates"），而它默认是 4:3。也就是说
+                     *      bound size 的宽高比会被默认策略盖掉。
+                     *   2. 官方明确建议两边要配套：让 bound size 的宽高比与 AspectRatioStrategy
+                     *      一致，而不是「留默认策略、只改 bound size」。
+                     * 所以现在两个都显式写明，并且都按 4:3。
                      *
-                     * FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER：优先找不小于目标的最近一档；
-                     * 找不到就退到下面的最近一档，不会因为机型没有 720p 就放弃。
+                     * 记住：**判断它到底出了多少分辨率只能看 Stream 配置**
+                     * （`adb shell dumpsys media.camera` 里 `Stream[n]: Output` 的 `Dims`），
+                     * 不能靠 grep 一个 "1280" 就算数 —— 那个数字可能属于别的流。
+                     *
+                     * FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER：优先选不大于目标的最近一档，
+                     * 找不到再往上找。用 LOWER 优先是为了保证不会又被抬到 1920x1440。
                      */
                     .setResolutionSelector(
                         ResolutionSelector.Builder()
+                            .setAspectRatioStrategy(
+                                AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
+                            )
                             .setResolutionStrategy(
                                 ResolutionStrategy(
-                                    Size(720, 1280),
-                                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                                    Size(1280, 960),
+                                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
                                 )
                             )
                             .build()

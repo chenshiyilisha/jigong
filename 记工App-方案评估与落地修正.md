@@ -819,6 +819,103 @@ sha256 `f31e5557…96ade` 与 `version.json` 一致；lint **0 error / 2 warning
 `MainActivity` 与 `QrScanActivity` 都是 `screenOrientation="portrait"`。
 **未上机**（用户要求先不连设备）。
 
+### 1.14：上机复验，抓出「扫码分辨率其实没降下来」
+
+设备重新连上后，把 1.12 / 1.13 里"只有推理没有实测"的几项逐条补验。
+其中一项**推翻了上一轮自己的结论**，先写这个。
+
+#### 一、分析流根本不是 720p，而是 1920×1440
+
+上一轮我写的是"已切到 720p，证据是 `dumpsys media.camera` 里出现 `[1280 720 30 120]`"。
+这次按同一方法再看，先看到 `Stream[1]: Output` 的 `Dims: 1920 x 1440` —— 比我设的目标大近 3 倍。
+
+**上一轮错在哪**：我用 `grep "1280\|720"` 捞到一行就下了结论，没确认那行属于哪条流。
+那个 `1280 720` 大概率是 Preview 或 HAL 的静态配置，不是分析流。这次改成
+`grep -A 4 "Stream[1]: Output"` 直接读 `Dims` 才对上。
+
+**为什么会跑到 1920×1440**：官方文档里有两句话，单看任何一句都容易漏：
+
+1. `AspectRatioStrategy` 的**排序优先级高于** `ResolutionStrategy`
+   —— 原文："the aspect ratio strategy takes precedence over the resolution strategy
+   when sorting candidates"。而 `AspectRatioStrategy` 默认是 **4:3**。
+2. 官方建议两边配套："pair a 1920x1080 bound size with RATIO_16_9_FALLBACK_AUTO_STRATEGY
+   rather than leaving the default 4:3 strategy in place"。
+
+我原来只给了 `Size(720, 1280)`（9:16），宽高比被默认的 4:3 策略盖掉，
+于是 CameraX 在 4:3 这一组里找"不小于目标"的最近一档 —— 而 720×1280 这种竖着写的
+bound size 在高度上要求 1280，4:3 里能同时满足宽高不小于它的最小一档正是 1920×1440。
+
+**修法**：两个都显式写明，且宽高比一致。
+
+```kotlin
+.setResolutionSelector(
+    ResolutionSelector.Builder()
+        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+        .setResolutionStrategy(
+            ResolutionStrategy(
+                Size(1280, 960),
+                ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
+            )
+        )
+        .build()
+)
+```
+
+- 选 4:3 是为了跟 Preview 对齐（本机预览 1632×1224 也是 4:3），两者同比例就不会出现裁剪错位。
+- 选 `CLOSEST_LOWER_THEN_HIGHER` 而不是 `HIGHER_THEN_LOWER`：保证不会再被"往上抬"。
+- 1280×960 = 123 万像素，是原来 1920×1440（276 万）的 **45%**。
+
+**实测确认**（这是唯一可信的证据）：
+
+```
+Stream[0] (Preview):    Dims: 1632 x 1224    ← 4:3
+Stream[1] (Analysis):   Dims: 1280 x 960     ← 4:3，改前是 1920 x 1440
+```
+
+#### 二、这一轮补验的全部结果
+
+| 项 | 方法 | 结果 |
+|---|---|---|
+| 小屏 360×640dp | `wm size 720x1280` + `wm density 320` | 主按钮露出上半截、**可滑动**，滑上去后完整可见且可点，弹层正常 |
+| 200% 字号首页 | `font_scale 2.0` | 年月完整、按钮在屏内、「本月/今年」完整 |
+| 200% 字号更新面板 | 同上 | 大按钮文字完整、自动变高（`heightIn` 生效），会换行但不裁 |
+| 200% 字号记工弹层 | 同上 | 半天/一天文字完整、「删除这天的记录」完整可见 |
+| 格子热区 | 点 27 号格子最上/最下边缘各一次 | 都能打开弹层（改前 48dp 以外点不动） |
+| 跨月读数 | 翻到 9 月后点主按钮 | 弹层显示「已记 1 天」、一天高亮、删除可用 |
+| 年份跟随 | 往前翻 12 个月到 2025 年 | 显示「2025 年 0 天」，不再是写死的"今年" |
+| 扫码页状态栏 | 打开扫码页看「关闭」位置 | 落在状态栏下方（`statusBarsPadding()` 生效） |
+| 非法地址 | 输入 `192.168.1.10/foo` 点检查 | 本地拦下，提示"地址不对。要像 192.168.1.10 或 …"，**没有英文 Invalid URL** |
+| 地址含空格 | 输入 `192.168.1.10 : 8767` | 清洗后通过校验（提示"连不上"而不是"地址不对"） |
+| 记一笔 + 撤销 | 设备内连点，抢在提示条 4 秒内 | 记上变 2 天；撤销后回 1 天、27 号回"还没记" |
+| **局域网更新全链路** | 电脑跑 `lan-update-server.py`，手机点「自动查找」 | 发现 `192.168.1.20:8765` → 自动填入 → 提示「已经是最新版本」 |
+
+最后一项价值最大：它一次性证明了 **UDP 广播发现 + 地址填充 + HTTP 请求 + JSON 解析 + 版本比对**
+整条链路在 **R8 混淆后的 release 包**上都能跑，不依赖任何调试构建。
+
+#### 三、一项没法用 adb 验的，如实说明
+
+**全角冒号这条，真机没验成**。`adb shell input text` 走的是 `KeyCharacterMap`，
+遇到 U+FF1A 这类非 ASCII 字符直接抛
+`NullPointerException: Attempt to get length of null array`，整串都送不进去 ——
+框里当时显示的 "192.168.1.10:8767" 其实是 **placeholder 提示文案**，不是输入内容
+（我一开始把它误当成"输入成功但读不到"，查了 `OutlinedTextField(value/onValueChange)`
+的绑定和 uiautomator 的 `EditText text=''` 才排除）。
+
+所以这一条目前只有两层证据：
+- 等价脚本跑了 10 组样例（中文冒号、全角数字+句点、`HTTP://` 大写、带空格、带路径）；
+- 真机上用**同一函数里的空白分支**做了替代验证（`192.168.1.10 : 8767` 能通）。
+  折半角那个 `when` 分支本身仍缺真机覆盖 —— 需要有人在中文输入法下手打一次。
+
+#### 四、扫码识别本身：待人工配合确认
+
+降分辨率这件事修完，**"相机帧 → ML Kit 解码"这一步还没在 1280×960 上实测过**。
+原因是 adb 没法让手机拍到一张二维码：手机上自己显示二维码时，同一台设备的后置摄像头
+拍不到自己的屏幕，而成像环境（USB 连着、手机平放、镜头对着空白面）也拿不到码。
+
+判断上风险不高：屏幕上 150dp 的二维码在 1280 宽的画面里约占 300~400px，
+按 25×25 模块算每模块 12~16px，远超 ML Kit 的最低要求（约 3px/模块）。
+但"算得通"不等于"验过"，这一条留在待验清单里。
+
 ---
 
 ## 六、四个会静默出错的坑
