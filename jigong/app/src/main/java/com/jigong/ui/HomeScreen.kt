@@ -378,7 +378,7 @@ fun HomeScreen(repo: WorkRepo) {
                         )
 
                         Text(
-                            text = "点日期可以补记或改备注",
+                            text = "点日期记工，顺手写备注",
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(top = 6.dp),
@@ -457,8 +457,27 @@ fun HomeScreen(repo: WorkRepo) {
                      * 写了字没点按钮就关掉，文字白写还查不出原因。宁可少一个按钮，
                      * 也不让"填过的东西消失"这种事发生。
                      */
-                    if (e.record != null && noteChanged(e.record.note, text)) {
-                        saveNote(e.date, text)
+                    val r = e.record
+                    if (r != null) {
+                        if (noteChanged(r.note, text)) saveNote(e.date, text)
+                    } else if (text.isNotBlank()) {
+                        /*
+                         * 输入框现在一进来就有，于是多出一条以前不存在的路径：
+                         * 这天还没记工、用户先写了备注、然后直接划走。
+                         *
+                         * 这条备注存不进去，而且是**不能**存：表里 work_amount 是
+                         * NOT NULL DEFAULT 1.0，为了装一句备注插一行，那天就凭空多出
+                         * 一天工，月底算账直接算错。宁可提示一句，也不能让账错。
+                         *
+                         * 提示而不是静默丢弃：老人打完字、屏幕上什么都没发生，
+                         * 他会以为存上了 —— 下次想起来翻记录才发现没了。
+                         */
+                        scope.launch {
+                            snackbar.showSnackbar(
+                                message = "还没选半天或一天，备注没存上",
+                                duration = SnackbarDuration.Short
+                            )
+                        }
                     }
                     editing = null
                 }
@@ -944,50 +963,45 @@ private fun DaySheet(
                 color = Palette.inkSoft
             )
 
+            /*
+             * 备注在按钮**上面**，而且一进来就有 —— 这是「记工的时候就能填备注」。
+             *
+             * 1.16 里输入框在下面、且只有记过工才出现，于是想写备注的人被迫走两遍：
+             * 点日期 → 点「一天」（弹层关掉）→ 再点同一天 → 才有输入框。
+             * 老人根本不会想到「再点一次」，他会以为这功能就是不能写。
+             *
+             * 放到按钮上面，整件事就变成一屏一次：写备注（可以不写）→ 点半天/一天，
+             * 工天和备注一起落库（onPick 两个参数一起提交，本来就是这么设计的）。
+             * 只记工不写备注的人路径完全不变：输入框空着，直接点「一天」，弹层关掉。
+             *
+             * 为什么不改成「点完一天不关弹层、停在原地等填」：那要让老人多点一次
+             * 「完成」才能收起来。记工是这个 app 最常做的动作，不能为备注加一步。
+             */
+            Text(
+                text = "备注（可不填）",
+                fontSize = Dimen.body,
+                color = Palette.inkSoft
+            )
+            Spacer(Modifier.height(6.dp))
+            OutlinedTextField(
+                value = text,
+                onValueChange = { if (it.length <= NOTE_MAX) text = it },
+                placeholder = {
+                    Text("比如：加班到十点、下雨只干半天", fontSize = 17.sp, color = Palette.hint)
+                },
+                textStyle = TextStyle(fontSize = 20.sp, color = Palette.ink),
+                // 1 行起步、4 行封顶：字号调到 2 倍时一行只放得下十来个字，
+                // 给到 4 行才够写「加班到十点」这种长度，再多就该收起来
+                minLines = 1,
+                maxLines = 4,
+                modifier = Modifier.fillMaxWidth()
+            )
+
             Spacer(Modifier.height(18.dp))
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 SheetBtn("半天", amount == 0.5, Modifier.weight(1f)) { onPick(0.5, text) }
                 SheetBtn("一天", amount == 1.0, Modifier.weight(1f)) { onPick(1.0, text) }
-            }
-
-            Spacer(Modifier.height(18.dp))
-
-            if (amount != null) {
-                Text(
-                    text = "备注（可不填）",
-                    fontSize = Dimen.body,
-                    color = Palette.inkSoft
-                )
-                Spacer(Modifier.height(6.dp))
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { if (it.length <= NOTE_MAX) text = it },
-                    placeholder = {
-                        Text("比如：加班到十点、下雨只干半天", fontSize = 17.sp, color = Palette.hint)
-                    },
-                    textStyle = TextStyle(fontSize = 20.sp, color = Palette.ink),
-                    // 1 行起步、4 行封顶：字号调到 2 倍时一行只放得下十来个字，
-                    // 给到 4 行才够写「加班到十点」这种长度，再多就该收起来
-                    minLines = 1,
-                    maxLines = 4,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            } else {
-                /*
-                 * 没记工就不给输入框，这不是偷懒，是数据模型决定的：
-                 * 备注是 work_record 这一行的字段，没这行记录它就没有地方待。
-                 *
-                 * 更大的坑是「插一行占位」那种做法 —— 表里 work_amount 是
-                 * NOT NULL DEFAULT 1.0，为了存一句备注插一行，那天就凭空多出
-                 * 一天工，月底算账直接算错。宁可少个功能，也不能让账错。
-                 * 所以这里明说一句，而不是给个灰掉的输入框让人猜。
-                 */
-                Text(
-                    text = "先记上半天或一天，才能写备注",
-                    fontSize = Dimen.body,
-                    color = Palette.hint
-                )
             }
 
             Spacer(Modifier.height(10.dp))

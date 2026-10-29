@@ -45,8 +45,8 @@ android {
         targetSdk = 35
         // 每次发新版就 +1。局域网更新靠这个数字判断"谁更新"，
         // 它必须严格递增，否则手机不会认。
-        versionCode = 17
-        versionName = "1.16"
+        versionCode = 18
+        versionName = "1.17"
     }
 
     // 签名信息从 local.properties 读（见文件开头那段说明）。

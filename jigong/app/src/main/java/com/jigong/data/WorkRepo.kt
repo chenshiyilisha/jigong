@@ -156,7 +156,9 @@ class WorkRepo private constructor(context: Context) {
      * `WHERE work_date = ?` 命中 0 行时**什么都不做**，也不会顺手插一行 ——
      * 插一行意味着给那天默认记上 1.0 天（建表时的 DEFAULT），
      * 用户只是写句备注，账上却凭空多一天工，这是绝不能有的副作用。
-     * 界面那边因此只在「已经记过工」时显示输入框，两头对上。
+     *
+     * 界面那边对应地：输入框一直显示（记工前也能写），但只有点「半天 / 一天」
+     * 才算提交；没记工就划走的，那句备注不写库，而是弹一句提示告诉用户没存上。
      */
     fun setNote(date: LocalDate, note: String?) {
         val cleanNote = note?.trim()?.takeIf { it.isNotEmpty() }
