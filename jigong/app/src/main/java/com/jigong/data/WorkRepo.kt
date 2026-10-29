@@ -8,6 +8,19 @@ import java.time.LocalDate
 import java.time.YearMonth
 
 /**
+ * 一天的全部内容：工天 + 备注。
+ *
+ * 备注为什么不能单独存：它没有自己的归属。「10月26日 加班」这句话只有在
+ * 「10月26日记了工」这个前提下才成立 —— 没有那行记录，备注挂在哪儿？
+ * 所以备注就是 work_record 这一行的附属字段，删记录 = 连备注一起没，
+ * 这也符合用户的心智（我把这天记错了，删掉 → 那天的备注当然也该没）。
+ *
+ * 空字符串一律归一成 null：库里只允许「有备注」和「没有备注」两种状态，
+ * 不留 `""` 这种既占空间又要在每个显示点判断一次的空值。
+ */
+data class DayRecord(val amount: Double, val note: String?)
+
+/**
  * 一张表的全部数据访问。
  *
  * 设计前提：
@@ -55,16 +68,19 @@ class WorkRepo private constructor(context: Context) {
             }
     }
 
-    /** 某个月里记过的日子：日期 -> 工天（1.0 / 0.5） */
-    fun monthMap(ym: YearMonth): Map<LocalDate, Double> {
-        val out = LinkedHashMap<LocalDate, Double>()
+    /** 某个月里记过的日子：日期 -> 工天（1.0 / 0.5）与备注 */
+    fun monthMap(ym: YearMonth): Map<LocalDate, DayRecord> {
+        val out = LinkedHashMap<LocalDate, DayRecord>()
         db.rawQuery(
-            "SELECT work_date, work_amount FROM work_record " +
+            "SELECT work_date, work_amount, note FROM work_record " +
                 "WHERE work_date BETWEEN ? AND ? ORDER BY work_date",
             arrayOf(ym.atDay(1).toString(), ym.atEndOfMonth().toString())
         ).use { c ->
             while (c.moveToNext()) {
-                out[LocalDate.parse(c.getString(0))] = c.getDouble(1)
+                out[LocalDate.parse(c.getString(0))] = DayRecord(
+                    amount = c.getDouble(1),
+                    note = if (c.isNull(2)) null else c.getString(2)?.takeIf { it.isNotBlank() }
+                )
             }
         }
         return out
@@ -77,12 +93,22 @@ class WorkRepo private constructor(context: Context) {
      * 按钮要的是**今天**的工天，而用户完全可以把日历翻到上个月去看 —— 这时候
      * `monthMap(today 所在月)` 是空的，按钮就会以为今天还没记，一点把已经记的
      * 0.5 天覆盖成 1 天。所以"今天"必须单独查，不能从当月的 map 里取。
+     *
+     * 备注走同一个方法返回，不是省事：今天那条备注和今天那条工天是同一行数据，
+     * 分成两次查询只多一次往返，还多一个"只更新了一半"的机会。
      */
-    fun dayAmount(date: LocalDate): Double? =
+    fun dayRecord(date: LocalDate): DayRecord? =
         db.rawQuery(
-            "SELECT work_amount FROM work_record WHERE work_date = ?",
+            "SELECT work_amount, note FROM work_record WHERE work_date = ?",
             arrayOf(date.toString())
-        ).use { c -> if (c.moveToFirst()) c.getDouble(0) else null }
+        ).use { c ->
+            if (c.moveToFirst()) {
+                DayRecord(
+                    amount = c.getDouble(0),
+                    note = if (c.isNull(1)) null else c.getString(1)?.takeIf { it.isNotBlank() }
+                )
+            } else null
+        }
 
     fun monthTotal(ym: YearMonth): Double =
         sumBetween(ym.atDay(1).toString(), ym.atEndOfMonth().toString())
@@ -95,34 +121,49 @@ class WorkRepo private constructor(context: Context) {
         if (from.isAfter(to)) 0.0 else sumBetween(from.toString(), to.toString())
 
     /**
-     * 把某一天设成 amount。覆盖语义 —— 重复调用结果相同，点不出 2 天。
+     * 把某一天设成 amount（备注一起写）。覆盖语义 —— 重复调用结果相同，点不出 2 天。
      *
      * 用「先 UPDATE，没改到行再 INSERT」而不是 UPSERT：
      * UPSERT(ON CONFLICT DO UPDATE) 要 SQLite 3.24，即 Android 11 以上；
      * 这个写法在 Android 8 上也能跑，且不会像 INSERT OR REPLACE 那样
      * 先删后插（会换 id、会触发外键级联）。
+     *
+     * note 是整体覆盖，不是"没传就保持不变"。调用方拿到的一定是弹层里
+     * 当前输入框的完整内容：用户把备注删光了，传进来就是 null，那就该真的清掉。
      */
-    fun setDay(date: LocalDate, amount: Double) {
+    fun setDay(date: LocalDate, amount: Double, note: String?) {
         val key = date.toString()
+        val cleanNote = note?.trim()?.takeIf { it.isNotEmpty() }
         val cv = ContentValues().apply {
             put("work_amount", amount)
+            if (cleanNote == null) putNull("note") else put("note", cleanNote)
         }
         db.beginTransaction()
         try {
             val changed = db.update("work_record", cv, "work_date = ?", arrayOf(key))
             if (changed == 0) {
-                db.insertOrThrow(
-                    "work_record", null,
-                    ContentValues().apply {
-                        put("work_date", key)
-                        put("work_amount", amount)
-                    }
-                )
+                db.insertOrThrow("work_record", null, ContentValues(cv).apply { put("work_date", key) })
             }
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
+    }
+
+    /**
+     * 只改备注，不动工天。
+     *
+     * `WHERE work_date = ?` 命中 0 行时**什么都不做**，也不会顺手插一行 ——
+     * 插一行意味着给那天默认记上 1.0 天（建表时的 DEFAULT），
+     * 用户只是写句备注，账上却凭空多一天工，这是绝不能有的副作用。
+     * 界面那边因此只在「已经记过工」时显示输入框，两头对上。
+     */
+    fun setNote(date: LocalDate, note: String?) {
+        val cleanNote = note?.trim()?.takeIf { it.isNotEmpty() }
+        val cv = ContentValues().apply {
+            if (cleanNote == null) putNull("note") else put("note", cleanNote)
+        }
+        db.update("work_record", cv, "work_date = ?", arrayOf(date.toString()))
     }
 
     fun clearDay(date: LocalDate) {
@@ -136,7 +177,7 @@ class WorkRepo private constructor(context: Context) {
             arrayOf(from, to)
         ).use { c -> if (c.moveToFirst()) c.getDouble(0) else 0.0 }
 
-    private class Helper(ctx: Context) : SQLiteOpenHelper(ctx, "jigong.db", null, 1) {
+    private class Helper(ctx: Context) : SQLiteOpenHelper(ctx, "jigong.db", null, 2) {
 
         override fun onCreate(db: SQLiteDatabase) {
             db.execSQL(
@@ -152,8 +193,34 @@ class WorkRepo private constructor(context: Context) {
             )
         }
 
+        /**
+         * v1 -> v2：启用 note 列。
+         *
+         * note 这一列从 v1 建表语句里就有，只是从来没用过 —— 所以对绝大多数
+         * 已装的手机，这次升级是空操作。但仍要按列名探测一次再 ALTER：
+         * 数据库文件是 1.0 那版建的，谁也说不准当时那句 CREATE TABLE 是不是
+         * 就已经带着 note（历史被重写过，翻不到现场）。而 ALTER TABLE ADD COLUMN
+         * 撞上已存在的列会抛 "duplicate column name"，直接让 App 一启动就崩。
+         *
+         * 探测比猜便宜：PRAGMA table_info 只是读一下 schema，31 行的表建不建都无所谓。
+         */
         override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-            // 只有一张表，v1 没有迁移
+            if (oldVersion < 2 && !hasColumn(db, "work_record", "note")) {
+                db.execSQL("ALTER TABLE work_record ADD COLUMN note TEXT")
+            }
         }
+
+        private fun hasColumn(db: SQLiteDatabase, table: String, column: String): Boolean =
+            db.rawQuery("PRAGMA table_info($table)", null).use { c ->
+                val nameIdx = c.getColumnIndex("name")
+                var found = false
+                while (c.moveToNext()) {
+                    if (c.getString(nameIdx) == column) {
+                        found = true
+                        break
+                    }
+                }
+                found
+            }
     }
 }

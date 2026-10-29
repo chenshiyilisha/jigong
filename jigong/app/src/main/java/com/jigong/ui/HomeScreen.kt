@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -69,6 +70,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.jigong.data.DayRecord
 import com.jigong.data.WorkRepo
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -87,18 +89,43 @@ import java.util.Locale
 private val WEEK_HEAD = listOf("一", "二", "三", "四", "五", "六", "日")
 
 /**
- * 正在编辑的那一天，以及**那天实际记了多少**。
+ * 备注最多 200 字。
  *
- * 为什么工天要跟着日期一起带过来，而不是在 DaySheet 里用 `records[date]` 查：
- * `records` 只装当前显示那个月的记录。用户把日历翻到 9 月、再点底部那颗
- * 「今天已记 1 天」，date 是 10 月 28 日，`records[10-28]` 必然是 null ——
+ * 不是技术限制（TEXT 列能存很多），是用途限制：这行字的用处是「想起来那天干了啥」，
+ * 二十个字足够；一旦有人往里面粘整段文字，日历格子上的小圆点、分享图、以后可能的
+ * 搜索全都要跟着处理长文本。200 是一个够用又不会失控的数。
+ */
+private const val NOTE_MAX = 200
+
+/**
+ * 正在编辑的那一天，以及**那天实际的记录**（工天 + 备注）。
+ *
+ * 为什么记录要跟着日期一起带过来，而不是在 DaySheet 里用 `days[date]` 查：
+ * `days` 只装当前显示那个月的记录。用户把日历翻到 9 月、再点底部那颗
+ * 「今天已记 1 天」，date 是 10 月 28 日，`days[10-28]` 必然是 null ——
  * 弹层显示「还没记」、两个选项都不高亮、「删除这天的记录」还是灰的，
  * 结果就是今天这条记录根本删不掉。真机已复现。
  *
  * 这是上一轮修主按钮时漏掉的同一个坑：凡是「今天」这个日期，都不能从
- * 当月 map 里取，必须用单独查出来的 todayAmount。
+ * 当月 map 里取，必须用单独查出来的 todayRecord。
+ *
+ * 备注跟着 record 一起带，理由和工天完全一样：翻到上个月时点开「今天已记 1 天」，
+ * 输入框里必须是今天那条备注。从 days[今天] 取同样会拿到 null，
+ * 用户看到空格子、随手一保存，就把原来的备注覆盖没了。
  */
-private data class Editing(val date: LocalDate, val amount: Double?)
+private data class Editing(val date: LocalDate, val record: DayRecord?)
+
+/**
+ * 一次 reload 要刷新的全部东西，一起从 IO 线程搬回来。
+ *
+ * 用 data class 而不是 Triple：工天现在带着备注，第四个字段（今天的记录）
+ * 再往 Triple 里塞就变成嵌套，读的时候 `r.first` / `r.third` 谁也记不住是哪个。
+ */
+private data class Snapshot(
+    val days: Map<LocalDate, DayRecord>,
+    val yearDays: Double,
+    val today: DayRecord?
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -148,11 +175,12 @@ fun HomeScreen(repo: WorkRepo) {
         }
     }
 
-    var records by remember { mutableStateOf<Map<LocalDate, Double>>(emptyMap()) }
+    var days by remember { mutableStateOf<Map<LocalDate, DayRecord>>(emptyMap()) }
     var yearDays by remember { mutableDoubleStateOf(0.0) }
-    // 「今天」单独存一份：records 只有当前显示那个月的记录，
-    // 翻到别的月份时从里面取今天必然是 null（见 WorkRepo.dayAmount 的注释）
-    var todayAmount by remember { mutableStateOf<Double?>(null) }
+    // 「今天」单独存一份：days 只有当前显示那个月的记录，
+    // 翻到别的月份时从里面取今天必然是 null（见 WorkRepo.dayRecord 的注释）。
+    // 工天和备注装在一起，因为它们在库里本来就是同一行 —— 分开存就有对不齐的机会。
+    var todayRecord by remember { mutableStateOf<DayRecord?>(null) }
     var editing by remember { mutableStateOf<Editing?>(null) }
 
     // 算账
@@ -201,32 +229,32 @@ fun HomeScreen(repo: WorkRepo) {
         val m = ym
         val t = today
         val r = withContext(Dispatchers.IO) {
-            Triple(repo.monthMap(m), repo.yearTotal(m.year), repo.dayAmount(t))
+            Snapshot(repo.monthMap(m), repo.yearTotal(m.year), repo.dayRecord(t))
         }
-        records = r.first
-        yearDays = r.second
-        todayAmount = r.third
+        days = r.days
+        yearDays = r.yearDays
+        todayRecord = r.today
     }
 
-    // 换月份要重load；跨天之后「今天」变了也要重load（todayAmount 和格子高亮都靠它）
+    // 换月份要重load；跨天之后「今天」变了也要重load（todayRecord 和格子高亮都靠它）
     LaunchedEffect(ym, today) { reload() }
 
     /**
      * 唯一写入口。覆盖语义，永远不会累加出 2 天。
      *
-     * 撤销用的「原来是多少」一定要从库里读，不能从 records 里取：
-     * records 只装了当前显示那个月的记录，翻月之后从这里取会拿到 null ——
+     * 撤销用的「原来是多少」一定要从库里读，不能从 days 里取：
+     * days 只装了当前显示那个月的记录，翻月之后从这里取会拿到 null ——
      * 于是「撤销」会把本来记着的半天整个删掉，而不是改回去。
      *
      * 读旧值 + 写入放进同一个 IO 块：原来是两行同步代码，一起搬走顺序语义不变，
      * 但不再占主线程。弹层由调用方立刻关掉，不等这一次写库。
      */
-    fun apply(date: LocalDate, amount: Double?) {
+    fun apply(date: LocalDate, amount: Double?, note: String?) {
         scope.launch {
             val old = try {
                 withContext(Dispatchers.IO) {
-                    val o = repo.dayAmount(date)
-                    if (amount == null) repo.clearDay(date) else repo.setDay(date, amount)
+                    val o = repo.dayRecord(date)
+                    if (amount == null) repo.clearDay(date) else repo.setDay(date, amount, note)
                     o
                 }
             } catch (e: Exception) {
@@ -255,14 +283,38 @@ fun HomeScreen(repo: WorkRepo) {
             )
             if (r == SnackbarResult.ActionPerformed) {
                 withContext(Dispatchers.IO) {
-                    if (old == null) repo.clearDay(date) else repo.setDay(date, old)
+                    // 撤销要把**备注也还原**。只还原工天的话，用户改完备注点撤销，
+                    // 数字回到原样、备注却已经变了 —— 一个"撤销"只撤了一半。
+                    if (old == null) repo.clearDay(date) else repo.setDay(date, old.amount, old.note)
                 }
                 reload()
             }
         }
     }
 
-    val monthDays = records.values.sum()
+    /**
+     * 只存备注，不动工天。
+     *
+     * 场景：用户打开某天、在输入框里补了一句备注、然后直接把弹层划走。
+     * 这条路径没有"记 1 天"那种明确动作，弹"已记 1 天"的提示是错的；
+     * 什么都不做又会让用户以为白写了。所以静默写库 + 静默刷新，
+     * 只在日历格子上多出一个小圆点 —— 那就是"存进去了"的回执。
+     *
+     * 失败也不弹 Toast：备注是附带的，写不进去不该打断记工。
+     */
+    fun saveNote(date: LocalDate, note: String?) {
+        scope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.setNote(date, note) } }
+                .onFailure { android.util.Log.w("jigong", "备注没写进去", it) }
+            reload()
+        }
+    }
+
+    /** 输入框里的东西和库里不一样才写。空串、纯空格、只有首尾空格都算"没变"。 */
+    fun noteChanged(before: String?, after: String): Boolean =
+        before.orEmpty().trim() != after.trim()
+
+    val monthDays = days.values.sumOf { it.amount }
 
     Box(Modifier.fillMaxSize()) {
         Scaffold(
@@ -320,13 +372,13 @@ fun HomeScreen(repo: WorkRepo) {
                         CalendarGrid(
                             ym = ym,
                             today = today,
-                            records = records,
-                            // 格子里的日期一定属于当前显示这个月，所以 records[它] 就是准确值
-                            onPick = { d -> editing = Editing(d, records[d]) }
+                            days = days,
+                            // 格子里的日期一定属于当前显示这个月，所以 days[它] 就是准确值
+                            onPick = { d -> editing = Editing(d, days[d]) }
                         )
 
                         Text(
-                            text = "点日期可以补记或修改",
+                            text = "点日期可以补记或改备注",
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(top = 6.dp),
@@ -370,11 +422,11 @@ fun HomeScreen(repo: WorkRepo) {
                         Spacer(Modifier.height(12.dp))
 
                         TodayButton(
-                            amount = todayAmount,
+                            amount = todayRecord?.amount,
                             onClick = {
-                                // 工天用 todayAmount，不是 records[today] —— 用户可能正翻在别的月份
-                                val cur = todayAmount
-                                if (cur == null) apply(today, 1.0) else editing = Editing(today, cur)
+                                // 用 todayRecord，不是 days[today] —— 用户可能正翻在别的月份
+                                if (todayRecord == null) apply(today, 1.0, null)
+                                else editing = Editing(today, todayRecord)
                             }
                         )
 
@@ -387,10 +439,29 @@ fun HomeScreen(repo: WorkRepo) {
         editing?.let { e ->
             DaySheet(
                 date = e.date,
-                amount = e.amount,
-                onPick = { a -> apply(e.date, a); editing = null },
-                onClear = { apply(e.date, null); editing = null },
-                onDismiss = { editing = null }
+                amount = e.record?.amount,
+                note = e.record?.note,
+                onPick = { a, n ->
+                    // 工天和备注一次写完：分两次写会出现"天数变了备注没变"的中间态，
+                    // 而撤销只能还原一次
+                    apply(e.date, a, n)
+                    editing = null
+                },
+                onClear = { apply(e.date, null, null); editing = null },
+                onDismiss = { text ->
+                    /*
+                     * 用户只补了备注、没点半天/一天，直接把弹层划走 —— 这条路径最常见
+                     * （"今天记了一天，顺手写句加班"）。这里静默存下来。
+                     *
+                     * 为什么不在输入框旁边放一颗"保存备注"按钮：老人不会去找它，
+                     * 写了字没点按钮就关掉，文字白写还查不出原因。宁可少一个按钮，
+                     * 也不让"填过的东西消失"这种事发生。
+                     */
+                    if (e.record != null && noteChanged(e.record.note, text)) {
+                        saveNote(e.date, text)
+                    }
+                    editing = null
+                }
             )
         }
 
@@ -636,7 +707,7 @@ private fun WeekHead() {
 private fun CalendarGrid(
     ym: YearMonth,
     today: LocalDate,
-    records: Map<LocalDate, Double>,
+    days: Map<LocalDate, DayRecord>,
     modifier: Modifier = Modifier,
     onPick: (LocalDate) -> Unit
 ) {
@@ -658,7 +729,8 @@ private fun CalendarGrid(
                         if (date != null) {
                             DayCell(
                                 date = date,
-                                amount = records[date],
+                                amount = days[date]?.amount,
+                                hasNote = days[date]?.note != null,
                                 isToday = date == today,
                                 isFuture = date.isAfter(today),
                                 onPick = onPick
@@ -675,6 +747,7 @@ private fun CalendarGrid(
 private fun DayCell(
     date: LocalDate,
     amount: Double?,
+    hasNote: Boolean,
     isToday: Boolean,
     isFuture: Boolean,
     onPick: (LocalDate) -> Unit
@@ -704,6 +777,8 @@ private fun DayCell(
             amount < 1.0 -> append("，记了半天")
             else -> append("，记了${fmtDays(amount)}天")
         }
+        // 右上角那个小点必须用语音补回来：它没有任何文字，读屏用户不可能知道
+        if (hasNote) append("，有备注")
     }
 
     Box(
@@ -765,6 +840,28 @@ private fun DayCell(
                 )
             }
         }
+
+        /*
+         * 有备注：格子右下角一个小圆点。
+         *
+         * 画在**药丸外面**、格子的下方那条 10dp 空带里，不是画进药丸 ——
+         * 药丸只有 48dp，200% 字号下「28」这两个数字几乎顶满，圆点塞进去会跟字形
+         * 叠在一起，两个白色色块糊成一团。那条空带本来就是点得动但看不见的死区，
+         * 拿来放标记正好。
+         *
+         * 为什么要有这个点：备注是"写进去就再也看不见"的东西 —— 不点开那一天，
+         * 用户根本不知道哪天写过。有个点至少能让他想起来"这天有东西"。
+         * 它是纯视觉信号，语音里由 contentDescription 的「有备注」补回来。
+         */
+        if (hasNote) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 4.dp, bottom = 2.dp)
+                    .size(6.dp)
+                    .background(Palette.accent, CircleShape)
+            )
+        }
     }
 }
 
@@ -799,21 +896,40 @@ private fun TodayButton(amount: Double?, onClick: () -> Unit) {
 private fun DaySheet(
     date: LocalDate,
     amount: Double?,
-    onPick: (Double) -> Unit,
+    note: String?,
+    onPick: (Double, String) -> Unit,
     onClear: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: (String) -> Unit
 ) {
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
+    /*
+     * 输入框里的内容只能由这个弹层自己拿住。
+     *
+     * 用 remember(date) 而不是 remember：这个 Composable 在 composition 里始终是
+     * 「同一个位置」，换一天时不会重建 —— 不按 date 重置的话，用户 26 号写了备注、
+     * 关掉再点 27 号，输入框里还挂着 26 号那句，一点「一天」就写到 27 号上了。
+     * 连着补几天工是这app最常见的用法，这条路径必然被踩到。
+     */
+    var text by remember(date) { mutableStateOf(note.orEmpty()) }
+
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { onDismiss(text) },
         sheetState = state,
         containerColor = Palette.sheetBg
     ) {
+        /*
+         * 整层可滚 + imePadding：键盘一弹出来，屏幕下半截就被占了。
+         * 弹层里现在有一个多行输入框，200% 系统字号下再加上键盘，
+         * 「删除这天的记录」会被顶到键盘底下 —— 和 1.15 那次「拉不到底」
+         * 是同一类问题，宁可让它能滚，也不赌每台机器都够高。
+         */
         Column(
             Modifier
                 .padding(horizontal = 20.dp)
                 .navigationBarsPadding()
+                .imePadding()
+                .verticalScroll(rememberScrollState())
         ) {
             Text(
                 text = "${date.monthValue}月${date.dayOfMonth}日 ${weekdayCn(date)}",
@@ -831,8 +947,47 @@ private fun DaySheet(
             Spacer(Modifier.height(18.dp))
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                SheetBtn("半天", amount == 0.5, Modifier.weight(1f)) { onPick(0.5) }
-                SheetBtn("一天", amount == 1.0, Modifier.weight(1f)) { onPick(1.0) }
+                SheetBtn("半天", amount == 0.5, Modifier.weight(1f)) { onPick(0.5, text) }
+                SheetBtn("一天", amount == 1.0, Modifier.weight(1f)) { onPick(1.0, text) }
+            }
+
+            Spacer(Modifier.height(18.dp))
+
+            if (amount != null) {
+                Text(
+                    text = "备注（可不填）",
+                    fontSize = Dimen.body,
+                    color = Palette.inkSoft
+                )
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { if (it.length <= NOTE_MAX) text = it },
+                    placeholder = {
+                        Text("比如：加班到十点、下雨只干半天", fontSize = 17.sp, color = Palette.hint)
+                    },
+                    textStyle = TextStyle(fontSize = 20.sp, color = Palette.ink),
+                    // 1 行起步、4 行封顶：字号调到 2 倍时一行只放得下十来个字，
+                    // 给到 4 行才够写「加班到十点」这种长度，再多就该收起来
+                    minLines = 1,
+                    maxLines = 4,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else {
+                /*
+                 * 没记工就不给输入框，这不是偷懒，是数据模型决定的：
+                 * 备注是 work_record 这一行的字段，没这行记录它就没有地方待。
+                 *
+                 * 更大的坑是「插一行占位」那种做法 —— 表里 work_amount 是
+                 * NOT NULL DEFAULT 1.0，为了存一句备注插一行，那天就凭空多出
+                 * 一天工，月底算账直接算错。宁可少个功能，也不能让账错。
+                 * 所以这里明说一句，而不是给个灰掉的输入框让人猜。
+                 */
+                Text(
+                    text = "先记上半天或一天，才能写备注",
+                    fontSize = Dimen.body,
+                    color = Palette.hint
+                )
             }
 
             Spacer(Modifier.height(10.dp))
